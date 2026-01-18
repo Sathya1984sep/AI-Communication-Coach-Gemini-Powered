@@ -1,0 +1,261 @@
+%%writefile app.py
+!pip install streamlit
+import streamlit as st
+import base64
+!pip install Flask
+from flask import Flask, jsonify
+import google.generativeai as genai
+import json
+import os
+import pandas as pd
+import csv
+from pathlib import Path
+from google.colab import drive
+drive.mount('/content/drive')
+def csv_to_json(csv_file, json_file):
+
+    with open(csv_file, mode='r') as file:
+        csv_reader = csv.DictReader(file)
+        voice = [row for row in csv_reader]
+
+    with open(json_file, mode='w') as file:
+        json.dump(voice, file, indent=4)
+
+    print(f"CSV to JSON conversion completed! {json_file}")
+
+print(csv_to_json('/content/drive/MyDrive/your csv file.csv', 'your file .json'))
+
+
+
+
+
+# --- CONFIGURATION ---
+DATA_FILE = "/content/your file.json"
+
+# --- HELPER FUNCTIONS ---
+
+def load_memory():
+    """Loads the user's specific coaching preferences (Simulated Fine-tuning data)."""
+    if not os.path.exists(DATA_FILE):
+        return []
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
+
+def save_memory(data):
+    """Saves the user's preferences to validate and store the 'model'."""
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def get_gemini_response(api_key, system_instruction, user_input, data_type="text"):
+    """Interacts with Gemini 1.5 Flash."""
+    user_input="/content/output_audio.wav"
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+
+        if data_type == "audio":
+            # Gemini 1.5 can process audio bytes directly
+            response = model.generate_content([system_instruction, user_input])
+        else:
+            response = model.generate_content([system_instruction, user_input])
+        return response.text
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+# --- APP UI ---
+
+st.set_page_config(page_title="Gemini Voice Coach", layout="wide")
+
+st.title("🎙️ AI Communication Coach (Gemini Powered)")
+st.markdown("""
+This tool listens to your voice (or reads your text), analyzes your communication style,
+and provides feedback based on **your personal fine-tuned preferences**.
+""")
+
+# Sidebar for API Key
+with st.sidebar:
+    st.header("Configuration")
+    api_key = st.text_input("Enter Google Gemini API Key", type="password", value="your API key")
+    st.info("Get your key from [Google AI Studio](https://aistudio.google.com/)")
+    st.divider()
+    st.write("### Model Status")
+    memory = load_memory()
+    st.write(f"Knowledge Base Size: **{len(memory)} rules**")
+    if st.button("Clear Training Data"):
+        if os.path.exists(DATA_FILE):
+            os.remove(DATA_FILE)
+            st.rerun()
+
+if not api_key:
+    st.warning("Please enter your Gemini API Key in the sidebar to proceed.")
+    st.stop()
+
+# --- TABS ---
+tab1, tab2 = st.tabs(["🗣️ Live Coaching", "🧠 Fine-Tune & Validate"])
+# --- TAB 1: LIVE COACHING ---
+with tab1:
+    st.header("Real-time Analysis")
+
+    # Construct the System Prompt based on Memory
+    memory_data = load_memory()
+    memory_context = ""
+    if memory_data:
+        memory_context = "Here are the USER'S PERSONAL STYLE RULES. You MUST follow these specifically:\n"
+        for item in memory_data:
+            # Safely access 'rule_name' and 'description' only if item is a dictionary
+            if isinstance(item, dict) and 'rule_name' in item and 'description' in item:
+                memory_context += f"- Rule Name: {item['rule_name']}\n  Description: {item['description']}\n"
+            else:
+                # This else block was added to explicitly handle cases where 'item' is not a dictionary
+                # or does not contain the expected keys.
+                st.warning(f"Skipping malformed rule in memory: {item}")
+
+    base_prompt = f"""
+    You are an expert Communication Coach.
+    1. Transcribe the user's input if it is audio.
+    2. Analyze the clarity, tone, and confidence.
+3. Provide improved phrasing.
+
+    {memory_context}
+
+    Output format:
+    **Transcription:** ...
+    **Analysis:** ...
+    **Suggested Improvement:** ...
+    """
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.subheader("Input Source")
+        input_type = st.radio("Choose Input:", ["Text", "Audio (Microphone)"])
+
+        user_content = None
+        data_type = "text"
+
+        if input_type == "Text":
+            user_content = st.text_area("Type your speech/email here:")
+        else:
+            # Streamlit Audio Input Widget
+            audio_value = st.audio_input("Record your voice")
+            if audio_value:
+                # Read bytes for Gemini
+                user_content = {"mime_type": "audio/wav", "data": audio_value.getvalue()}
+                data_type = "audio"
+
+        if st.button("Analyze Communication"):
+            if user_content:
+                with st.spinner("The Coach is thinking..."):
+                    feedback = get_gemini_response(api_key, base_prompt, user_content, data_type)
+                    st.session_state['last_feedback'] = feedback
+
+            else:
+
+              st.info("Feedback will appear here.")
+
+# --- TAB 2: FINE-TUNE & VALIDATE ---
+with tab2:
+    st.header("Fine-Tune Your Coach")
+    st.markdown("""
+    Teach the AI your specific preferences. For example:
+    *"Always make me sound more empathetic"* or *"Keep my responses under 2 sentences".*
+    """)
+
+    # Input for Fine-tuning
+    with st.form("training_form"):
+       rule_name = st.text_input("Rule Name (e.g., 'Professional Tone')")
+       rule_desc = st.text_area("Description/Example (e.g., 'If I sound angry, suggest a polite alternative.')")
+       submitted = st.form_submit_button("Save & Train Model")
+
+    if submitted and rule_name and rule_desc:
+            current_memory = load_memory()
+            current_memory.append({"rule_name": rule_name, "description": rule_desc})
+            save_memory(current_memory)
+            st.success(f"Model updated with rule: {rule_name}")
+
+            st.divider()
+
+    # Validation Section
+            st.subheader("Validate Model")
+            st.write("Test if the model understands your new rule.")
+
+            test_input = st.text_input("Enter a test phrase to validate:")
+            if st.button("Run Validation"):
+               if test_input:
+            # Create a specific validation prompt
+                 validation_prompt = f"""
+            VALIDATION MODE.
+            User Rules: {json.dumps(load_memory())}
+
+            Task: Does the following input violate or adhere to the user's rules?
+            Explain how you would apply the rules to this input: '{test_input}'
+            """
+
+            with st.spinner("Validating..."):
+                val_response = get_gemini_response(api_key, validation_prompt, "Analyze this.", "text")
+                st.markdown("### Validation Result")
+                st.markdown(val_response)
+
+
+app = Flask(__name__)
+
+@app.route('/api/data', methods=['GET'])
+def get_data():
+    """Endpoint to return sample data."""
+    return jsonify({'message': 'Hello from Flask API!'})
+
+if __name__ == '__main__':
+    with st.spinner("Validating..."):
+                val_response = get_gemini_response(api_key, validation_prompt, "Analyze this.", "text")
+                st.markdown("### Validation Result")
+                st.markdown(val_response)
+
+    # Run the Flask app
+    app.run(port=5000)
+
+#Coding for conversion of .acc file into .Wav file
+import subprocess
+import os
+from google.colab import drive
+drive.mount('/content/drive')
+!pip install ffmpeg-python
+import ffmpeg
+
+
+
+
+# Define file names
+input_file = "/content/drive/MyDrive/your file.aac"
+output_file = "output_audio.wav"
+
+def convert_aac_to_wav_subprocess(input_file, output_file):
+    """
+    Converts an AAC audio file to a WAV file using ffmpeg via subprocess.
+    """
+    # The basic FFmpeg command for conversion
+    input_file = "/content/drive/MyDrive/your file.aac"
+    output_file = "output_audio.wav"
+    command = [
+        'ffmpeg',
+        '-i', input_file,  # Input file
+        '-acodec', 'pcm_s16le', # Use PCM signed 16-bit little-endian codec for WAV
+        '-ar', '44100',      # Set the audio sampling rate (e.g., 44100 Hz)
+        '-ac', '2',          # Set the number of audio channels (e.g., 2 for stereo, 1 for mono)
+        output_file        # Output file (FFmpeg infers format from extension)
+    ]
+
+    try:
+        # Run the command
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"Conversion successful! WAV file saved as: {output_file}")
+    except subprocess.CalledProcessError as e:
+        print(f"An error occurred during conversion: {e.stderr.decode()}")
+    except FileNotFoundError:
+        print("Error: ffmpeg executable not found. Make sure it's installed and in your system's PATH.")
+
+# Example usage:
+input_aac = 'input_file'
+output_wav = 'output_file'
+convert_aac_to_wav_subprocess(input_aac, output_wav)
+
+
